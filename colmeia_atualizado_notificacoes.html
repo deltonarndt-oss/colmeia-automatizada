@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Monitoramento da Colmeia</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(135deg, #fbc2eb 0%, #a6c1ee 100%);
+      color: #333; margin: 0; padding: 20px;
+      display: flex; flex-direction: column; align-items: center;
+    }
+    h1 { color: #9b6b32; text-align: center; margin-bottom: 5px; }
+    .subtitle { font-size: 14px; color: #555; margin-bottom: 20px; text-align:center; }
+    .container { display:flex; flex-direction:column; gap:16px; width:100%; max-width:440px; }
+    .card {
+      background:white; border-radius:15px; padding:18px;
+      box-shadow:0 10px 20px rgba(0,0,0,.06);
+      display:flex; align-items:center; border-left:8px solid #ffb703;
+    }
+    .card.weight { border-left-color:#fb8500; }
+    .card.activity { border-left-color:#219ebc; }
+    .icon { font-size:42px; margin-right:18px; }
+    .info { display:flex; flex-direction:column; min-width:0; }
+    .label { font-size:13px; color:#777; text-transform:uppercase; font-weight:bold; letter-spacing:.7px; }
+    .value { font-size:29px; font-weight:bold; color:#222; margin:5px 0; overflow-wrap:anywhere; }
+    .update-time { font-size:11px; color:#888; }
+    .status {
+      width:100%; max-width:440px; margin-top:16px; padding:16px;
+      border-radius:14px; background:#e8f5e9; border:2px solid #2e7d32;
+      text-align:center; font-weight:bold;
+    }
+    .status.warning { background:#fff8e1; border-color:#f9a825; color:#805600; }
+    .status.danger { background:#ffebee; border-color:#c62828; color:#b71c1c; }
+    .status.neutral { background:#eceff1; border-color:#78909c; color:#37474f; }
+    .details { font-size:12px; font-weight:normal; margin-top:7px; line-height:1.45; }
+    .actions { width:100%; max-width:440px; margin-top:14px; text-align:center; }
+    button {
+      background:#5d7834; color:white; border:0; border-radius:9px;
+      padding:12px 16px; font-size:14px; font-weight:bold; cursor:pointer;
+    }
+    .note { max-width:440px; font-size:12px; color:#444; line-height:1.45; margin-top:14px; }
+  </style>
+</head>
+<body>
+  <h1>🐝 Monitoramento do Apiário</h1>
+  <div class="subtitle">Colônia Marquês de Abrantes · Tunas do Paraná – PR</div>
+
+  <div class="container">
+    <div class="card">
+      <div class="icon">🌡️</div>
+      <div class="info">
+        <div class="label">Temperatura da colmeia</div>
+        <div class="value" id="txt-temperatura">---</div>
+        <div class="update-time" id="tempo-temperatura">Aguardando dados...</div>
+      </div>
+    </div>
+
+    <div class="card weight">
+      <div class="icon">⚖️</div>
+      <div class="info">
+        <div class="label">Peso do mel (capacidade até 200 kg)</div>
+        <div class="value" id="txt-peso">--- kg</div>
+        <div class="update-time" id="tempo-peso">Aguardando dados...</div>
+      </div>
+    </div>
+
+    <div class="card activity">
+      <div class="icon">🐝</div>
+      <div class="info">
+        <div class="label">Atividade das abelhas</div>
+        <div class="value" id="txt-atividade">Verificando...</div>
+        <div class="update-time" id="tempo-atividade">Aguardando sinal...</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="alerta" class="status neutral">
+    MONITORAMENTO INICIANDO
+    <div class="details" id="detalhe-alerta">Buscando os dados da colmeia...</div>
+  </div>
+
+  <div class="actions">
+    <button id="btn-notificacao" type="button" onclick="ativarNotificacoes()">Ativar alertas neste aparelho</button>
+  </div>
+
+  <div class="note">
+    O alerta de PERIGO é considerado somente durante a claridade do dia e após 60 minutos sem sinal de movimentação.
+    Para receber notificações, permita os avisos do navegador e mantenha esta página aberta. O limite de 200 kg é uma
+    referência visual; o painel não interrompe nem limita fisicamente a pesagem.
+  </div>
+
+<script>
+  // ThingSpeak: Field 1 = temperatura; Field 2 = peso em kg; Field 3 = movimento (1 = houve movimento).
+  const channelID = "3420192";
+  const readKey = "8HCZZ5BJD4RSSMXV";
+  const TEMPO_PERIGO_MS = 60 * 60 * 1000;
+  const INTERVALO_ATUALIZACAO_MS = 15000;
+
+  // Coordenadas aproximadas de Tunas do Paraná. A colônia pode ter pequena diferença local.
+  const LATITUDE = -25.08;
+  const LONGITUDE = -49.09;
+
+  let ultimoAvisoPerigo = false;
+  let ultimaLeituraValida = null;
+
+  function horarioSolarHoje(date = new Date()) {
+    // Cálculo aproximado do nascer e pôr do sol (algoritmo NOAA simplificado).
+    const dia = Math.floor((Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) -
+      Date.UTC(date.getFullYear(), 0, 0)) / 86400000);
+    const lngHour = LONGITUDE / 15;
+    function calcularNascerPôr(nascer) {
+      const t = dia + ((nascer ? 6 : 18) - lngHour) / 24;
+      const M = (0.9856 * t) - 3.289;
+      let L = M + (1.916 * Math.sin(M * Math.PI / 180)) +
+        (0.020 * Math.sin(2 * M * Math.PI / 180)) + 282.634;
+      L = (L + 360) % 360;
+      let RA = Math.atan(0.91764 * Math.tan(L * Math.PI / 180)) * 180 / Math.PI;
+      RA = (RA + 360) % 360;
+      RA += Math.floor(L / 90) * 90 - Math.floor(RA / 90) * 90;
+      RA /= 15;
+      const sinDec = 0.39782 * Math.sin(L * Math.PI / 180);
+      const cosDec = Math.cos(Math.asin(sinDec));
+      const cosH = (Math.cos(90.833 * Math.PI / 180) -
+        sinDec * Math.sin(LATITUDE * Math.PI / 180)) /
+        (cosDec * Math.cos(LATITUDE * Math.PI / 180));
+      if (cosH > 1 || cosH < -1) return null;
+      let H = nascer ? 360 - Math.acos(cosH) * 180 / Math.PI :
+        Math.acos(cosH) * 180 / Math.PI;
+      H /= 15;
+      const T = H + RA - (0.06571 * t) - 6.622;
+      let UT = (T - lngHour) % 24;
+      if (UT < 0) UT += 24;
+      // Paraná usa UTC-3.
+      const localHours = (UT - 3 + 24) % 24;
+      const result = new Date(date);
+      result.setHours(0, 0, 0, 0);
+      result.setMinutes(Math.round(localHours * 60));
+      return result;
+    }
+    return { nascer: calcularNascerPôr(true), por: calcularNascerPôr(false) };
+  }
+
+  function estaClaroAgora(agora = new Date()) {
+    const sol = horarioSolarHoje(agora);
+    return !!(sol.nascer && sol.por && agora >= sol.nascer && agora <= sol.por);
+  }
+
+  function formatarHora(data) {
+    return data ? data.toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit'}) : '--:--';
+  }
+
+  function mostrarAlerta(tipo, titulo, detalhe) {
+    const el = document.getElementById('alerta');
+    el.className = 'status ' + tipo;
+    el.firstChild.textContent = titulo;
+    document.getElementById('detalhe-alerta').textContent = detalhe;
+  }
+
+  // No Android, as notificações devem ser exibidas por um Service Worker.
+  async function obterRegistroNotificacoes() {
+    if (!('Notification' in window) || !('serviceWorker' in navigator)) {
+      throw new Error('Este navegador não oferece suporte completo a notificações.');
+    }
+    if (!window.isSecureContext) {
+      throw new Error('Abra o painel por um endereço HTTPS (por exemplo, GitHub Pages). Notificações não funcionam em arquivo local ou HTTP comum.');
+    }
+    return await navigator.serviceWorker.register('./sw.js');
+  }
+
+  async function notificar(titulo, mensagem) {
+    try {
+      if (!('Notification' in window) || Notification.permission !== 'granted') return;
+      const registro = await obterRegistroNotificacoes();
+      await registro.showNotification(titulo, {
+        body: mensagem,
+        tag: 'alerta-colmeia',
+        icon: './icone-colmeia.png',
+        badge: './icone-colmeia.png',
+        renotify: true
+      });
+    } catch (erro) {
+      console.error('Não foi possível exibir a notificação:', erro);
+    }
+  }
+
+  async function ativarNotificacoes() {
+    const botao = document.getElementById('btn-notificacao');
+    botao.disabled = true;
+    botao.textContent = 'Ativando alertas...';
+    try {
+      await obterRegistroNotificacoes();
+      let permissao = Notification.permission;
+      if (permissao === 'default') permissao = await Notification.requestPermission();
+      if (permissao !== 'granted') {
+        botao.textContent = 'Permitir alertas neste aparelho';
+        alert('A permissão para notificações não foi concedida. Verifique as permissões do site nas configurações do Chrome.');
+        return;
+      }
+      botao.textContent = 'Alertas ativados neste aparelho';
+      await notificar('🐝 Monitoramento da colmeia', 'Teste concluído: as notificações estão ativadas neste aparelho.');
+    } catch (erro) {
+      console.error(erro);
+      botao.textContent = 'Tentar ativar alertas novamente';
+      alert(erro.message || 'Não foi possível ativar as notificações.');
+    } finally {
+      botao.disabled = false;
+    }
+  }
+
+  async function atualizarDados() {
+    const url = `https://api.thingspeak.com/channels/${channelID}/feeds.json?api_key=${readKey}&results=800`;
+    try {
+      const resposta = await fetch(url, { cache: 'no-store' });
+      if (!resposta.ok) throw new Error('HTTP ' + resposta.status);
+      const dados = await resposta.json();
+      const feeds = dados.feeds || [];
+      if (!feeds.length) throw new Error('O canal ainda não possui leituras.');
+
+      const atual = feeds[feeds.length - 1];
+      ultimaLeituraValida = new Date(atual.created_at);
+      const temperatura = atual.field1;
+      const peso = atual.field2;
+
+      document.getElementById('txt-temperatura').textContent =
+        temperatura !== null && temperatura !== '' ? Number(temperatura).toFixed(1) + ' °C' : '-- °C';
+      document.getElementById('txt-peso').textContent =
+        peso !== null && peso !== '' ? Number(peso).toFixed(3) + ' kg' : '-- kg';
+      document.getElementById('tempo-temperatura').textContent =
+        'Última leitura às ' + formatarHora(ultimaLeituraValida);
+      document.getElementById('tempo-peso').textContent =
+        'Última pesagem às ' + formatarHora(ultimaLeituraValida);
+
+      // Considera movimento quando Field 3 for um valor numérico maior que zero.
+      const leiturasComMovimento = feeds.filter(f => {
+        const v = Number(f.field3);
+        return f.field3 !== null && f.field3 !== '' && Number.isFinite(v) && v > 0;
+      });
+      const ultimoMovimento = leiturasComMovimento.length
+        ? new Date(leiturasComMovimento[leiturasComMovimento.length - 1].created_at)
+        : null;
+
+      const agora = new Date();
+      const claro = estaClaroAgora(agora);
+      const sol = horarioSolarHoje(agora);
+      const textoSol = `Claridade estimada: ${formatarHora(sol.nascer)}–${formatarHora(sol.por)}.`;
+
+      if (!ultimoMovimento) {
+        document.getElementById('txt-atividade').textContent = 'Sem sinal';
+        document.getElementById('tempo-atividade').textContent = 'Nenhum movimento positivo encontrado no histórico.';
+        if (claro) {
+          mostrarAlerta('warning', 'ATENÇÃO — SEM SINAL DE MOVIMENTO',
+            'Não há registro de movimento no histórico recebido. ' + textoSol);
+        } else {
+          mostrarAlerta('neutral', 'MONITORAMENTO NOTURNO',
+            'Fora do período de claridade, não é disparado alerta de perigo. ' + textoSol);
+        }
+        ultimoAvisoPerigo = false;
+        return;
+      }
+
+      const minutosParadas = Math.max(0, (agora - ultimoMovimento) / 60000);
+      document.getElementById('tempo-atividade').textContent =
+        'Último movimento às ' + formatarHora(ultimoMovimento) +
+        ' · ' + Math.floor(minutosParadas) + ' min sem novo sinal';
+
+      if (minutosParadas < 1) {
+        document.getElementById('txt-atividade').textContent = 'Abelhas trabalhando';
+      } else {
+        document.getElementById('txt-atividade').textContent = 'Abelhas paradas';
+      }
+
+      if (claro && agora - ultimoMovimento >= TEMPO_PERIGO_MS) {
+        mostrarAlerta('danger', '🚨 PERIGO — ABELHAS SEM MOVIMENTO',
+          'Já se passaram 60 minutos desde o último sinal de movimento durante a claridade. ' + textoSol);
+        if (!ultimoAvisoPerigo) {
+          notificar('🚨 PERIGO NA COLMEIA', 'Sem sinal de movimento há 60 minutos durante a claridade do dia.');
+          ultimoAvisoPerigo = true;
+        }
+      } else if (claro) {
+        mostrarAlerta('success', 'ABELHAS TRABALHANDO / MONITORAMENTO NORMAL',
+          'Último movimento há ' + Math.floor(minutosParadas) + ' minuto(s). O perigo só será indicado após 60 minutos sem movimento. ' + textoSol);
+        ultimoAvisoPerigo = false;
+      } else {
+        mostrarAlerta('neutral', 'MONITORAMENTO NOTURNO',
+          'Sem alerta de perigo durante a noite. Último movimento às ' + formatarHora(ultimoMovimento) + '. ' + textoSol);
+        ultimoAvisoPerigo = false;
+      }
+    } catch (erro) {
+      console.error('Erro ao buscar dados do ThingSpeak:', erro);
+      mostrarAlerta('warning', 'FALHA NA COMUNICAÇÃO',
+        'Não foi possível atualizar os dados do ThingSpeak. Verifique a internet e os Fields do canal.');
+    }
+  }
+
+  atualizarDados();
+  setInterval(atualizarDados, INTERVALO_ATUALIZACAO_MS);
+</script>
+</body>
+</html>
